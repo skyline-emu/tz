@@ -18,6 +18,9 @@
 #include "tzfile.h"
 #include <fcntl.h>
 
+#ifdef HORIZON_COMPAT
+#include <stddef.h>
+#endif
 #if defined THREAD_SAFE && THREAD_SAFE
 # include <pthread.h>
 static pthread_mutex_t locallock = PTHREAD_MUTEX_INITIALIZER;
@@ -105,10 +108,12 @@ struct ttinfo {				/* time type information */
 	bool		tt_ttisut;	/* transition is UT */
 };
 
+#ifndef NO_LEAPSECONDS
 struct lsinfo {				/* leap second information */
 	time_t		ls_trans;	/* transition time */
 	int_fast64_t	ls_corr;	/* correction to apply */
 };
+#endif
 
 #define SMALLEST(a, b)	(((a) < (b)) ? (a) : (b))
 #define BIGGEST(a, b)	(((a) > (b)) ? (a) : (b))
@@ -121,7 +126,9 @@ struct lsinfo {				/* leap second information */
 #endif /* !defined TZNAME_MAX */
 
 struct state {
+#ifndef NO_LEAPSECONDS
 	int		leapcnt;
+#endif
 	int		timecnt;
 	int		typecnt;
 	int		charcnt;
@@ -132,13 +139,33 @@ struct state {
 	struct ttinfo	ttis[TZ_MAX_TYPES];
 	char		chars[BIGGEST(BIGGEST(TZ_MAX_CHARS + 1, sizeof gmt),
 				(2 * (MY_TZNAME_MAX + 1)))];
+#ifndef NO_LEAPSECONDS
 	struct lsinfo	lsis[TZ_MAX_LEAPS];
-
+#endif
 	/* The time type to use for early times or if no transitions.
 	   It is always zero for recent tzdb releases.
 	   It might be nonzero for data from tzdb 2018e or earlier.  */
 	int defaulttype;
+#ifdef HORIZON_COMPAT
+	char padding[0x12C4];
+#endif
 };
+
+#ifdef HORIZON_COMPAT
+_Static_assert(sizeof(bool) == 1, "bool is not 1 byte wide");
+_Static_assert(sizeof(char) == 1, "char is not 1 byte wide");
+_Static_assert(sizeof(int) == 4, "int is not 4 bytes wide");
+_Static_assert(sizeof(int_fast32_t) == 4, "int_fast32_t is not 4 bytes wide");
+_Static_assert(sizeof(time_t) == 8, "time_t is not 8 bytes wide");
+
+_Static_assert(TZ_MAX_TIMES == 1000, "TZ_MAX_TIMES is not 1000");
+_Static_assert(TZ_MAX_TYPES == 128, "TZ_MAX_TYPES is not 128");
+_Static_assert(BIGGEST(BIGGEST(TZ_MAX_CHARS + 1, sizeof gmt), (2 * (MY_TZNAME_MAX + 1))) == (2 * (MY_TZNAME_MAX + 1)), "chars array size is not (2 * (MY_TZNAME_MAX + 1))");
+
+_Static_assert(sizeof(struct ttinfo) == 0x10, "ttinfo is not 0x10 bytes wide");
+
+_Static_assert(offsetof(struct state, defaulttype) == 0x2D38, "defaulttype offset is not 0x2D38 bytes");
+#endif
 
 enum r_type {
   JULIAN_DAY,		/* Jn = Julian day */
@@ -154,8 +181,10 @@ struct rule {
 	int_fast32_t	r_time;		/* transition time of rule */
 };
 
+#ifndef NO_GLOBAL_STATE
 static struct tm *gmtsub(struct state const *, time_t const *, int_fast32_t,
 			 struct tm *);
+#endif
 static bool increment_overflow(int *, int);
 static bool increment_overflow_time(time_t *, int_fast32_t);
 static int_fast64_t leapcorr(struct state const *, time_t);
@@ -164,6 +193,8 @@ static struct tm *timesub(time_t const *, int_fast32_t, struct state const *,
 			  struct tm *);
 static bool typesequiv(struct state const *, int, int);
 static bool tzparse(char const *, struct state *, bool);
+
+#ifndef NO_GLOBAL_STATE
 
 #ifdef ALL_STATE
 static struct state *	lclptr;
@@ -177,12 +208,16 @@ static struct state	gmtmem;
 #define gmtptr		(&gmtmem)
 #endif /* State Farm */
 
+#endif
+
 #ifndef TZ_STRLEN_MAX
 #define TZ_STRLEN_MAX 255
 #endif /* !defined TZ_STRLEN_MAX */
 
 static char		lcl_TZname[TZ_STRLEN_MAX + 1];
+#ifndef NO_GLOBAL_STATE
 static int		lcl_is_set;
+#endif
 
 /*
 ** Section 4.12.3 of X3.159-1989 requires that
@@ -281,6 +316,7 @@ update_tzname_etc(struct state const *sp, struct ttinfo const *ttisp)
 #endif
 }
 
+#ifndef NO_GLOBAL_STATE
 static void
 settzname(void)
 {
@@ -318,6 +354,7 @@ settzname(void)
 #endif
 	}
 }
+#endif
 
 static void
 scrub_abbrs(struct state *sp)
@@ -382,20 +419,27 @@ union local_storage {
 /* Load tz data from the file named NAME into *SP.  Read extended
    format if DOEXTEND.  Use *LSP for temporary storage.  Return 0 on
    success, an errno value on failure.  */
+#ifndef NO_GLOBAL_STATE
 static int
 tzloadbody(char const *name, struct state *sp, bool doextend,
 	   union local_storage *lsp)
+#else
+static int
+tzloadbody(unsigned char *buffer, long size, struct state *sp, bool doextend,
+	   union local_storage *lsp)
+#endif
 {
 	register int			i;
 	register int			fid;
 	register int			stored;
-	register ssize_t		nread;
+	register ssize_t		nread = size;
 	register bool doaccess;
 	register union input_buffer *up = &lsp->u.u;
 	register int tzheadsize = sizeof (struct tzhead);
 
 	sp->goback = sp->goahead = false;
 
+#ifndef NO_GLOBAL_STATE
 	if (! name) {
 		name = TZDEFAULT;
 		if (! name)
@@ -449,6 +493,12 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 	}
 	if (close(fid) < 0)
 	  return errno;
+#else
+	if (size < tzheadsize)
+		return EINVAL;
+
+	memcpy(up->buf, buffer, SMALLEST(size, sizeof up->buf));
+#endif
 	for (stored = 4; stored <= 8; stored *= 2) {
 		int_fast32_t ttisstdcnt = detzcode(up->tzhead.tzh_ttisstdcnt);
 		int_fast32_t ttisutcnt = detzcode(up->tzhead.tzh_ttisutcnt);
@@ -479,7 +529,9 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 		       + ttisstdcnt		/* ttisstds */
 		       + ttisutcnt))		/* ttisuts */
 		  return EINVAL;
+#ifndef NO_LEAPSECONDS
 		sp->leapcnt = leapcnt;
+#endif
 		sp->timecnt = timecnt;
 		sp->typecnt = typecnt;
 		sp->charcnt = charcnt;
@@ -536,6 +588,7 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 			sp->chars[i] = *p++;
 		sp->chars[i] = '\0';	/* ensure '\0' at end */
 
+#ifndef NO_LEAPSECONDS
 		/* Read leap seconds, discarding those out of time_t range.  */
 		leapcnt = 0;
 		for (i = 0; i < sp->leapcnt; ++i) {
@@ -560,6 +613,7 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 		  }
 		}
 		sp->leapcnt = leapcnt;
+#endif
 
 		for (i = 0; i < sp->typecnt; ++i) {
 			register struct ttinfo *	ttisp;
@@ -735,21 +789,34 @@ tzloadbody(char const *name, struct state *sp, bool doextend,
 
 /* Load tz data from the file named NAME into *SP.  Read extended
    format if DOEXTEND.  Return 0 on success, an errno value on failure.  */
+#ifndef NO_GLOBAL_STATE
 static int
 tzload(char const *name, struct state *sp, bool doextend)
+#else
+static int
+tzload(char const *buffer, long size, struct state *sp, bool doextend)
+#endif
 {
 #ifdef ALL_STATE
   union local_storage *lsp = malloc(sizeof *lsp);
   if (!lsp)
     return errno;
   else {
+#ifndef NO_GLOBAL_STATE
     int err = tzloadbody(name, sp, doextend, lsp);
+#else
+    int err = tzloadbody(buffer, size, sp, doextend, lsp);
+#endif
     free(lsp);
     return err;
   }
 #else
   union local_storage ls;
+#ifndef NO_GLOBAL_STATE
   return tzloadbody(name, sp, doextend, &ls);
+#else
+  return tzloadbody(buffer, size, sp, doextend, &ls);
+#endif
 #endif
 }
 
@@ -1105,9 +1172,15 @@ tzparse(const char *name, struct state *sp, bool lastditch)
 	charcnt = stdlen + 1;
 	if (sizeof sp->chars < charcnt)
 	  return false;
+#ifndef HORIZON_COMPAT
 	load_ok = tzload(TZDEFRULES, sp, false) == 0;
+#else
+	load_ok = false;
+#endif
+#ifndef NO_LEAPSECONDS
 	if (!load_ok)
 		sp->leapcnt = 0;		/* so, we're off a little */
+#endif
 	if (*name != '\0') {
 		if (*name == '<') {
 			dstname = ++name;
@@ -1319,23 +1392,36 @@ tzparse(const char *name, struct state *sp, bool lastditch)
 	return true;
 }
 
+#ifndef NO_GLOBAL_STATE
 static void
 gmtload(struct state *const sp)
 {
 	if (tzload(gmt, sp, true) != 0)
 		tzparse(gmt, sp, true);
 }
+#endif
 
 /* Initialize *SP to a value appropriate for the TZ setting NAME.
    Return 0 on success, an errno value on failure.  */
+#ifndef NO_GLOBAL_STATE
 static int
 zoneinit(struct state *sp, char const *name)
+#else
+static int
+zoneinit(struct state *sp, unsigned char *buffer, long size)
+#endif
 {
+#ifndef NO_GLOBAL_STATE
   if (name && ! name[0]) {
+#else
+  if (! size) {
+#endif
     /*
     ** User wants it fast rather than right.
     */
+#ifndef NO_LEAPSECONDS
     sp->leapcnt = 0;		/* so, we're off a little */
+#endif
     sp->timecnt = 0;
     sp->typecnt = 0;
     sp->charcnt = 0;
@@ -1345,15 +1431,20 @@ zoneinit(struct state *sp, char const *name)
     sp->defaulttype = 0;
     return 0;
   } else {
+#ifndef NO_GLOBAL_STATE
     int err = tzload(name, sp, true);
     if (err != 0 && name && name[0] != ':' && tzparse(name, sp, false))
       err = 0;
+#else
+    int err = tzload(buffer, size, sp, true);
+#endif
     if (err == 0)
       scrub_abbrs(sp);
     return err;
   }
 }
 
+#ifndef NO_GLOBAL_STATE
 static void
 tzset_unlocked(void)
 {
@@ -1377,16 +1468,22 @@ tzset_unlocked(void)
   settzname();
   lcl_is_set = lcl;
 }
+#endif
 
 void
 tzset(void)
 {
+#ifndef NO_GLOBAL_STATE
   if (lock() != 0)
     return;
   tzset_unlocked();
   unlock();
+#else
+  return;
+#endif
 }
 
+#ifndef NO_GLOBAL_STATE
 static void
 gmtcheck(void)
 {
@@ -1403,15 +1500,25 @@ gmtcheck(void)
   }
   unlock();
 }
+#endif
 
 #if NETBSD_INSPIRED
 
+#ifndef NO_GLOBAL_STATE
 timezone_t
 tzalloc(char const *name)
+#else
+timezone_t
+tzalloc(unsigned char *buffer, long size)
+#endif
 {
   timezone_t sp = malloc(sizeof *sp);
   if (sp) {
+#ifndef NO_GLOBAL_STATE
     int err = zoneinit(sp, name);
+#else
+    int err = zoneinit(sp, buffer, size);
+#endif
     if (err != 0) {
       free(sp);
       errno = err;
@@ -1465,7 +1572,11 @@ localsub(struct state const *sp, time_t const *timep, int_fast32_t setname,
 
 	if (sp == NULL) {
 	  /* Don't bother to set tzname etc.; tzset has already done it.  */
+#ifndef NO_GLOBAL_STATE
 	  return gmtsub(gmtptr, timep, 0, tmp);
+#else
+	  return NULL;
+#endif
 	}
 	if ((sp->goback && t < sp->ats[0]) ||
 		(sp->goahead && t > sp->ats[sp->timecnt - 1])) {
@@ -1543,6 +1654,7 @@ localtime_rz(struct state *sp, time_t const *timep, struct tm *tmp)
 
 #endif
 
+#ifndef NO_GLOBAL_STATE
 static struct tm *
 localtime_tzset(time_t const *timep, struct tm *tmp, bool setname)
 {
@@ -1557,23 +1669,33 @@ localtime_tzset(time_t const *timep, struct tm *tmp, bool setname)
   unlock();
   return tmp;
 }
+#endif
 
 struct tm *
 localtime(const time_t *timep)
 {
+#ifndef NO_GLOBAL_STATE
   return localtime_tzset(timep, &tm, true);
+#else
+  return NULL;
+#endif
 }
 
 struct tm *
 localtime_r(const time_t *timep, struct tm *tmp)
 {
+#ifndef NO_GLOBAL_STATE
   return localtime_tzset(timep, tmp, false);
+#else
+  return 0;
+#endif
 }
 
 /*
 ** gmtsub is to gmtime as localsub is to localtime.
 */
 
+#ifndef NO_GLOBAL_STATE
 static struct tm *
 gmtsub(struct state const *sp, time_t const *timep, int_fast32_t offset,
        struct tm *tmp)
@@ -1592,6 +1714,7 @@ gmtsub(struct state const *sp, time_t const *timep, int_fast32_t offset,
 #endif /* defined TM_ZONE */
 	return result;
 }
+#endif
 
 /*
 * Re-entrant version of gmtime.
@@ -1600,8 +1723,12 @@ gmtsub(struct state const *sp, time_t const *timep, int_fast32_t offset,
 struct tm *
 gmtime_r(const time_t *timep, struct tm *tmp)
 {
+#ifndef NO_GLOBAL_STATE
   gmtcheck();
   return gmtsub(gmtptr, timep, 0, tmp);
+#else
+  return NULL;
+#endif
 }
 
 struct tm *
@@ -1615,8 +1742,12 @@ gmtime(const time_t *timep)
 struct tm *
 offtime(const time_t *timep, long offset)
 {
+#ifndef NO_GLOBAL_STATE
   gmtcheck();
   return gmtsub(gmtptr, timep, offset, &tm);
+#else
+  return NULL;
+#endif
 }
 
 #endif /* defined STD_INSPIRED */
@@ -1644,7 +1775,9 @@ static struct tm *
 timesub(const time_t *timep, int_fast32_t offset,
 	const struct state *sp, struct tm *tmp)
 {
+#ifndef NO_LEAPSECONDS
 	register const struct lsinfo *	lp;
+#endif
 	register time_t			tdays;
 	register int			idays;	/* unsigned would be so 2003 */
 	register int_fast64_t		rem;
@@ -1656,6 +1789,7 @@ timesub(const time_t *timep, int_fast32_t offset,
 
 	corr = 0;
 	hit = false;
+#ifndef NO_LEAPSECONDS
 	i = (sp == NULL) ? 0 : sp->leapcnt;
 	while (--i >= 0) {
 		lp = &sp->lsis[i];
@@ -1666,6 +1800,8 @@ timesub(const time_t *timep, int_fast32_t offset,
 			break;
 		}
 	}
+#endif
+
 	y = EPOCH_YEAR;
 	tdays = *timep / SECSPERDAY;
 	rem = *timep % SECSPERDAY;
@@ -2169,8 +2305,12 @@ mktime_tzname(struct state *sp, struct tm *tmp, bool setname)
   if (sp)
     return time1(tmp, localsub, sp, setname);
   else {
+#ifndef NO_GLOBAL_STATE
     gmtcheck();
     return time1(tmp, gmtsub, gmtptr, 0);
+#else
+	return 0;
+#endif
   }
 }
 
@@ -2187,6 +2327,7 @@ mktime_z(struct state *sp, struct tm *tmp)
 time_t
 mktime(struct tm *tmp)
 {
+#ifndef NO_GLOBAL_STATE
   time_t t;
   int err = lock();
   if (err) {
@@ -2197,6 +2338,9 @@ mktime(struct tm *tmp)
   t = mktime_tzname(lclptr, tmp, true);
   unlock();
   return t;
+#else
+  return 0;
+#endif
 }
 
 #ifdef STD_INSPIRED
@@ -2220,12 +2364,17 @@ timeoff(struct tm *tmp, long offset)
 {
   if (tmp)
     tmp->tm_isdst = 0;
+#ifndef NO_GLOBAL_STATE
   gmtcheck();
   return time1(tmp, gmtsub, gmtptr, offset);
+#else
+  return 0;
+#endif
 }
 
 #endif /* defined STD_INSPIRED */
 
+#ifndef NO_LEAPSECONDS
 static int_fast64_t
 leapcorr(struct state const *sp, time_t t)
 {
@@ -2240,7 +2389,13 @@ leapcorr(struct state const *sp, time_t t)
 	}
 	return 0;
 }
-
+#else
+static int_fast64_t
+leapcorr(struct state const *sp, time_t t)
+{
+	return 0;
+}
+#endif
 /*
 ** XXX--is the below the right way to conditionalize??
 */
@@ -2264,6 +2419,7 @@ time2posix_z(struct state *sp, time_t t)
 time_t
 time2posix(time_t t)
 {
+#ifndef NO_GLOBAL_STATE
   int err = lock();
   if (err) {
     errno = err;
@@ -2275,6 +2431,9 @@ time2posix(time_t t)
     t = time2posix_z(lclptr, t);
   unlock();
   return t;
+#else
+  return 0;
+#endif
 }
 
 NETBSD_INSPIRED_EXTERN time_t
@@ -2309,6 +2468,7 @@ posix2time_z(struct state *sp, time_t t)
 time_t
 posix2time(time_t t)
 {
+#ifndef NO_GLOBAL_STATE
   int err = lock();
   if (err) {
     errno = err;
@@ -2320,6 +2480,9 @@ posix2time(time_t t)
     t = posix2time_z(lclptr, t);
   unlock();
   return t;
+#else
+  return 0;
+#endif
 }
 
 #endif /* defined STD_INSPIRED */

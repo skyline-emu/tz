@@ -17,6 +17,11 @@
 ** Thank you!
 */
 
+#ifdef HORIZON_COMPAT
+#define NO_LEAPSECONDS
+#define NO_GLOBAL_STATE
+#endif
+
 /*
 ** zdump has been made independent of the rest of the time
 ** conversion package to increase confidence in the verification it provides.
@@ -293,6 +298,14 @@ typedef int int_fast32_t;
 #  define INT_FAST32_MAX INT_MAX
 #  define INT_FAST32_MIN INT_MIN
 # endif
+#endif
+
+#ifdef HORIZON_COMPAT
+# undef INT_FAST32_MAX
+# undef INT_FAST32_MIN
+# define INT_FAST32_MAX INT_MAX
+# define INT_FAST32_MIN INT_MIN
+# define int_fast32_t int
 #endif
 
 #ifndef INTMAX_MAX
@@ -595,7 +608,11 @@ typedef struct state *timezone_t;
 struct tm *localtime_rz(timezone_t restrict, time_t const *restrict,
 			struct tm *restrict);
 time_t mktime_z(timezone_t restrict, struct tm *restrict);
+#ifndef NO_GLOBAL_STATE
 timezone_t tzalloc(char const *);
+#else
+timezone_t tzalloc(unsigned char *, long);
+#endif
 void tzfree(timezone_t);
 # ifdef STD_INSPIRED
 #  if TZ_TIME_T || !defined posix2time_z

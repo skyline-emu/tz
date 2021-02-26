@@ -103,12 +103,20 @@ struct tzhead {
 */
 
 #ifndef TZ_MAX_TIMES
+#ifdef HORIZON_COMPAT
+#define TZ_MAX_TIMES	1000
+#else
 #define TZ_MAX_TIMES	2000
+#endif
 #endif /* !defined TZ_MAX_TIMES */
 
 #ifndef TZ_MAX_TYPES
 /* This must be at least 17 for Europe/Samara and Europe/Vilnius.  */
+#ifdef HORIZON_COMPAT
+#define TZ_MAX_TYPES	128
+#else
 #define TZ_MAX_TYPES	256 /* Limited by what (unsigned char)'s can hold */
+#endif
 #endif /* !defined TZ_MAX_TYPES */
 
 #ifndef TZ_MAX_CHARS
