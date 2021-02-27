@@ -10,7 +10,6 @@
 *.rej
 *.tar
 *.tar.*
-*.txt
 *.tzs
 *.zi
 *~
