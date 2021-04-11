@@ -586,7 +586,7 @@ time_t posix2time(time_t);
    guessing if NO_TM_ZONE is defined.  Similarly for TM_GMTOFF.  */
 #if (defined __GLIBC__ \
      || defined __FreeBSD__ || defined __NetBSD__ || defined __OpenBSD__ \
-     || (defined __APPLE__ && defined __MACH__))
+     || (defined __APPLE__ && defined __MACH__) || defined HORIZON_COMPAT)
 # if !defined TM_GMTOFF && !defined NO_TM_GMTOFF
 #  define TM_GMTOFF tm_gmtoff
 # endif
